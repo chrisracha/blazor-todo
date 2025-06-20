@@ -3,28 +3,32 @@
 @using TestApp.Services
 @using TestApp.Data
 @using Microsoft.AspNetCore.Authorization
-@using System.Threading
 @inject UserManager<ApplicationUser> UserManager
 @inject IToDoService ToDoService
 @inject AuthenticationStateProvider AuthenticationStateProvider
-@inject NavigationManager NavigationManager
 @implements IDisposable
 @rendermode InteractiveServer
 
 @attribute [Authorize]
 
+<PageTitle>To-Do List</PageTitle>
+
 <div class="container py-4">
     <div class="card shadow">
-        <div class="card-header bg-primary text-white">
+        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
             <h3 class="mb-0">Your To-Do List</h3>
+            <button @onclick="QuickRefresh" class="btn btn-sm btn-light" disabled="@isBusy">
+                <i class="bi bi-arrow-clockwise @(isBusy ? "spinner" : "")"></i>
+            </button>
         </div>
         <div class="card-body">
             <div class="mb-4">
                 <div class="input-group">
                     <input @bind="newTitle" @bind:event="oninput" @onkeyup="HandleKeyPress"
                            class="form-control" placeholder="New task..." id="newTaskInput" name="newTaskInput" />
-                    <button @onclick="AddWithFeedback" class="btn btn-primary" id="addButton" name="addButton" disabled="@(isLoading || isAdding)">
-                        @if (isAdding)
+                    <button @onclick="QuickAdd" class="btn btn-primary" id="addButton" name="addButton"
+                            disabled="@isBusy">
+                        @if (isBusy && operation == Operation.Add)
                         {
                             <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
                             <span class="ms-1">Adding...</span>
@@ -42,11 +46,11 @@
             {
                 <div class="alert alert-danger alert-dismissible fade show" role="alert">
                     <strong>Error:</strong> @errorMessage
-                    <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+                    <button type="button" class="btn-close" @onclick="ClearError"></button>
                 </div>
             }
 
-            @if (isLoading)
+            @if (isBusy && operation == Operation.Load && (todos == null || !todos.Any()))
             {
                 <div class="text-center p-3">
                     <div class="spinner-border text-primary" role="status">
@@ -64,21 +68,31 @@
             else
             {
                 <ul class="list-group">
-                    @foreach (var t in todos)
+                    @foreach (var todo in todos)
                     {
                         <li class="list-group-item d-flex justify-content-between align-items-center">
                             <div class="form-check">
                                 <input type="checkbox" class="form-check-input"
-                                       checked="@t.isDone"
-                                       @onchange="() => ToggleComplete(t)"
-                                       id="@($"todo-{t.Id}")" name="@($"todo-{t.Id}")" />
-                                <label class="form-check-label @(t.isDone ? "text-decoration-line-through text-muted" : "")"
-                                       for="@($"todo-{t.Id}")">
-                                    @t.Title
+                                       checked="@todo.isDone"
+                                       @onchange="() => ToggleTodo(todo)"
+                                       id="@($"todo-{todo.Id}")" name="@($"todo-{todo.Id}")"
+                                       disabled="@(isBusy && operation == Operation.Update)" />
+                                <label class="form-check-label @(todo.isDone ? "text-decoration-line-through text-muted" : "")"
+                                       for="@($"todo-{todo.Id}")">
+                                    @todo.Title
                                 </label>
                             </div>
-                            <button @onclick="() => Delete(t.Id)" class="btn btn-sm btn-outline-danger">
-                                <i class="bi bi-trash"></i>
+                            <button @onclick="() => DeleteTodo(todo.Id)"
+                                    class="btn btn-sm btn-outline-danger"
+                                    disabled="@(isBusy && operation == Operation.Delete)">
+                                @if (isBusy && operation == Operation.Delete && currentId == todo.Id)
+                                {
+                                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                }
+                                else
+                                {
+                                    <i class="bi bi-trash"></i>
+                                }
                             </button>
                         </li>
                     }
@@ -89,183 +103,200 @@
                 </div>
             }
         </div>
-        <div class="card-footer text-end">
-            <button @onclick="RefreshList" class="btn btn-sm btn-outline-secondary" disabled="@isLoading">
-                <i class="bi bi-arrow-clockwise"></i> Refresh
-            </button>
-        </div>
     </div>
 </div>
 
 @code {
+    private enum Operation { None, Load, Add, Update, Delete }
+
     private List<ToDoItem> todos = new();
     private string newTitle = string.Empty;
     private string? userId;
     private string? errorMessage;
-    private bool isLoading = true;
-    private bool isAdding = false;
-    private SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
+    private bool isBusy = false;
+    private Operation operation = Operation.None;
+    private int currentId = 0;
+    private bool isDisposed = false;
 
     protected override async Task OnInitializedAsync()
     {
-        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
-        var user = authState.User;
-        userId = UserManager.GetUserId(user);
-
-        ToDoService.ItemsChanged += OnItemsChanged;
-
-        await LoadTodosInternal();
-    }
-
-    private async Task RefreshList()
-    {
-        await LoadTodosInternal();
-    }
-
-    private async Task LoadTodosInternal()
-    {
-        if (!semaphore.Wait(0))
+        try
         {
-            return; 
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+            userId = UserManager.GetUserId(user);
+
+            ToDoService.ItemsChanged += OnItemsChanged;
+            await LoadTodos();
         }
+        catch (Exception ex)
+        {
+            errorMessage = $"Initialization error: {ex.Message}";
+        }
+    }
+
+    private void ClearError()
+    {
+        errorMessage = null;
+    }
+
+    private async Task QuickRefresh()
+    {
+        if (!isBusy)
+        {
+            await LoadTodos();
+        }
+    }
+
+    private async Task LoadTodos()
+    {
+        if (isBusy || userId == null || isDisposed) return;
+
+        operation = Operation.Load;
+        isBusy = true;
+        StateHasChanged();
 
         try
         {
-            isLoading = true;
-            StateHasChanged();
-
-            if (userId is not null)
-            {
-                todos = await ToDoService.GetForUserAsync(userId);
-            }
-
+            todos = await ToDoService.GetForUserAsync(userId);
             errorMessage = null;
         }
         catch (Exception ex)
         {
-            errorMessage = $"Failed to load todos: {ex.Message}";
+            errorMessage = $"Error loading tasks: {ex.Message}";
+            todos ??= new List<ToDoItem>(); 
         }
         finally
         {
-            isLoading = false;
-            semaphore.Release();
-            StateHasChanged();
+            isBusy = false;
+            operation = Operation.None;
+            if (!isDisposed) StateHasChanged();
         }
     }
 
     private void OnItemsChanged()
     {
+        if (isDisposed) return;
+
         InvokeAsync(async () =>
         {
-            await LoadTodosInternal();
+            if (!isBusy && !isDisposed)
+            {
+                await LoadTodos();
+            }
         });
     }
 
-    private async Task AddWithFeedback()
+    private async Task QuickAdd()
     {
-        isAdding = true;
-        StateHasChanged();
-
-        try
+        if (!isBusy)
         {
-            await Add();
-        }
-        finally
-        {
-            isAdding = false;
-            StateHasChanged();
+            await AddTodo();
         }
     }
 
-    private async Task Add()
+    private async Task AddTodo()
     {
-        if (string.IsNullOrWhiteSpace(newTitle) || userId == null)
+        if (string.IsNullOrWhiteSpace(newTitle) || userId == null || isBusy || isDisposed)
             return;
 
-        if (!semaphore.Wait(0)) 
-        {
-            return;
-        }
+        operation = Operation.Add;
+        isBusy = true;
+        StateHasChanged();
 
         try
         {
             var item = new ToDoItem { Title = newTitle.Trim(), isDone = false, UserId = userId };
             await ToDoService.AddAsync(item);
-
             newTitle = "";
-            StateHasChanged();
 
             todos = await ToDoService.GetForUserAsync(userId);
-            StateHasChanged();
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error adding todo: {ex.Message}";
+            errorMessage = $"Error adding task: {ex.Message}";
         }
         finally
         {
-            semaphore.Release();
+            isBusy = false;
+            operation = Operation.None;
+            if (!isDisposed) StateHasChanged();
         }
     }
 
-    private async Task ToggleComplete(ToDoItem item)
+    private async Task ToggleTodo(ToDoItem item)
     {
-        if (!semaphore.Wait(0))
-            return;
+        if (isBusy || isDisposed) return;
+
+        operation = Operation.Update;
+        currentId = item.Id;
+        isBusy = true;
+        StateHasChanged();
 
         try
         {
             item.isDone = !item.isDone;
             await ToDoService.UpdateAsync(item);
 
-            if (userId != null)
-            {
-                todos = await ToDoService.GetForUserAsync(userId);
-                StateHasChanged();
-            }
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error updating todo: {ex.Message}";
+            errorMessage = $"Error updating task: {ex.Message}";
+            item.isDone = !item.isDone;
+
+            if (userId != null)
+                todos = await ToDoService.GetForUserAsync(userId);
         }
         finally
         {
-            semaphore.Release();
+            isBusy = false;
+            operation = Operation.None;
+            currentId = 0;
+            if (!isDisposed) StateHasChanged();
         }
     }
 
-    private async Task Delete(int id)
+    private async Task DeleteTodo(int id)
     {
-        if (!semaphore.Wait(0) || userId == null)
-            return;
+        if (isBusy || userId == null || isDisposed) return;
+
+        operation = Operation.Delete;
+        currentId = id;
+        isBusy = true;
+        StateHasChanged();
 
         try
         {
             await ToDoService.DeleteAsync(id, userId);
-            todos = await ToDoService.GetForUserAsync(userId);
-            StateHasChanged();
+
+            todos.RemoveAll(t => t.Id == id);
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error deleting todo: {ex.Message}";
+            errorMessage = $"Error deleting task: {ex.Message}";
+
+            todos = await ToDoService.GetForUserAsync(userId);
         }
         finally
         {
-            semaphore.Release();
+            isBusy = false;
+            operation = Operation.None;
+            currentId = 0;
+            if (!isDisposed) StateHasChanged();
         }
     }
 
     private async Task HandleKeyPress(KeyboardEventArgs e)
     {
-        if (e.Key == "Enter" && !isAdding && !isLoading)
+        if (e.Key == "Enter" && !isBusy && !isDisposed)
         {
-            await AddWithFeedback();
+            await AddTodo();
         }
     }
 
     public void Dispose()
     {
+        isDisposed = true;
         ToDoService.ItemsChanged -= OnItemsChanged;
-        semaphore.Dispose();
     }
 }

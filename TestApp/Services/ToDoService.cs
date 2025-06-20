@@ -17,14 +17,12 @@ namespace TestApp.Services
         {
             try
             {
-                // Make sure required fields are set
                 if (string.IsNullOrEmpty(item.Title) || string.IsNullOrEmpty(item.UserId))
                     throw new ArgumentException("Title and UserId are required for ToDo items");
                 
                 _ctx.ToDoItems.Add(item);
                 var result = await _ctx.SaveChangesAsync();
                 
-                // Verify something was actually saved
                 if (result > 0)
                 {
                     ItemsChanged?.Invoke();
@@ -32,9 +30,8 @@ namespace TestApp.Services
             }
             catch (Exception ex)
             {
-                // Log the exception
                 Console.WriteLine($"Error in AddAsync: {ex.Message}");
-                throw; // Rethrow so calling code can handle it
+                throw;
             }
         }
 
@@ -58,7 +55,6 @@ namespace TestApp.Services
 
         public void Dispose()
         {
-            // nothing to dispose in this service
             GC.SuppressFinalize(this);
         }
     }
