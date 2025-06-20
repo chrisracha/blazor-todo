@@ -1,7 +1,7 @@
 # Blazor To-Do App
 
 ### A modern, interactive Todo list application built with Blazor Server that allows users to manage their tasks in real-time.
-![To-Do](https://via.placeholder.com/800x450?text=TestApp+Todo+Screenshot](https://raw.githubusercontent.com/chrisracha/blazor-todo/refs/heads/main/sample.png)
+![To-Do](https://raw.githubusercontent.com/chrisracha/blazor-todo/refs/heads/main/sample.png)
 ----
 Features
 
