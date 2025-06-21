@@ -18,7 +18,7 @@
 
 * .NET 9.0 SDK
 * SQL Server (LocalDB or full instance)
-* Visual Studio 2022 or compatible IDE
+* Visual Studio 2022 (recommended) or compatible IDE
 
 #### Installation
 
